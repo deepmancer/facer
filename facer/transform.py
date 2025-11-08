@@ -17,7 +17,7 @@ def get_crop_and_resize_matrix(
             ranging from `0` to `h-1` or `w-1`.
 
         offset_box_coords (bool): Set this to `True` if the box you give has coordinates
-            ranging from `0` to `h` or `w`. 
+            ranging from `0` to `h` or `w`.
 
             Set this to `False` if the box coordinates range from `-0.5` to `h-0.5` or `w-0.5`.
 
@@ -170,18 +170,31 @@ def get_quad(lm: torch.Tensor):
 
 
 def get_face_align_matrix_celebm(
-        face_pts: torch.Tensor, target_shape: Tuple[int, int]):
+        face_pts: torch.Tensor, target_shape: Tuple[int, int], bbox_scale_factor: float = 1.0):
 
     face_pts = torch.stack([get_quad(pts) for pts in face_pts], dim=0).to(face_pts)
-
+    face_mean = face_pts.mean(axis=1).unsqueeze(1)
+    diff = face_pts - face_mean
+    face_pts = face_mean + torch.tensor([[[1.5, 1.5]]], device=diff.device)*diff
     assert target_shape[0] == target_shape[1]
-    target_size  = target_shape[0]
-    target_pts = torch.as_tensor([[0, 0], [target_size,0], [target_size, target_size], [0, target_size]]).to(face_pts)
+    diagonal = torch.norm(face_pts[:, 0, :] - face_pts[:, 2, :], dim=-1)
+    min_bbox_size = 350
+    max_bbox_size = 500
+    bbox_scale_factor = bbox_scale_factor +  torch.clamp((max_bbox_size-diagonal)/(max_bbox_size-min_bbox_size), 0, 1)
+    print(bbox_scale_factor)
+    target_size  = target_shape[0]/bbox_scale_factor
+    #target_pts = torch.as_tensor([[0, 0], [target_size,0], [target_size, target_size], [0, target_size]]).to(face_pts)
+    target_ptss = []
+    for tidx in range(target_size.shape[0]):
+        target_pts = torch.as_tensor([[0, 0], [target_size[tidx],0], [target_size[tidx], target_size[tidx]], [0, target_size[tidx]]]).to(face_pts)
+        target_pts += int( (target_shape[0]-target_size[tidx])/2 )
+        target_ptss.append(target_pts)
+    target_pts = torch.stack(target_ptss, dim=0)
 
-    if target_pts.dim() == 2:
-        target_pts = target_pts.unsqueeze(0)
-    if target_pts.size(0) == 1:
-        target_pts = target_pts.broadcast_to(face_pts.shape)
+    #if target_pts.dim() == 2:
+    #    target_pts = target_pts.unsqueeze(0)
+    #if target_pts.size(0) == 1:
+    #    target_pts = target_pts.broadcast_to(face_pts.shape)
 
     assert target_pts.shape == face_pts.shape
 
@@ -192,7 +205,7 @@ def _meshgrid(h, w) -> Tuple[torch.Tensor, torch.Tensor]:
     yy, xx = torch.meshgrid(torch.arange(h).float(),
                             torch.arange(w).float(),
                             indexing='ij')
-    return yy + 0.5, xx + 0.5
+    return yy, xx
 
 
 def _forge_grid(batch_size: int, device: torch.device,
@@ -203,15 +216,15 @@ def _forge_grid(batch_size: int, device: torch.device,
 
     Args:
         output_shape (tuple): (b, h, w, ...).
-        fn (Callable[[torch.Tensor], torch.Tensor]): The function that accepts 
-            a bxnx2 array and outputs the transformed bxnx2 array. Both input 
+        fn (Callable[[torch.Tensor], torch.Tensor]): The function that accepts
+            a bxnx2 array and outputs the transformed bxnx2 array. Both input
             and output store (x, y) coordinates.
 
-    Note: 
+    Note:
         both input and output arrays of `fn` should store (y, x) coordinates.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]: Two maps `X` and `Y`, where for each 
+        Tuple[torch.Tensor, torch.Tensor]: Two maps `X` and `Y`, where for each
             pixel (y, x) or coordinate (x, y),
             `(X[y, x], Y[y, x]) = fn([x, y])`
     """
@@ -236,9 +249,9 @@ def inverted_tanh_warp_transform(coords: torch.Tensor, matrix: torch.Tensor,
 
     Args:
         coords (torch.Tensor): b x n x 2 (x, y). The transformed coordinates.
-        matrix: b x 3 x 3. A matrix that transforms un-normalized coordinates 
+        matrix: b x 3 x 3. A matrix that transforms un-normalized coordinates
             from the original image to the aligned yet not-warped image.
-        warp_factor (float): The warp factor. 
+        warp_factor (float): The warp factor.
             0 means linear transform, 1 means full tanh warp.
         warped_shape (tuple): [height, width].
 
@@ -290,9 +303,9 @@ def tanh_warp_transform(
 
     Args:
         coords (torch.Tensor): b x n x 2 (x, y). The original coordinates.
-        matrix: b x 3 x 3. A matrix that transforms un-normalized coordinates 
+        matrix: b x 3 x 3. A matrix that transforms un-normalized coordinates
             from the original image to the aligned yet not-warped image.
-        warp_factor (float): The warp factor. 
+        warp_factor (float): The warp factor.
             0 means linear transform, 1 means full tanh warp.
         warped_shape (tuple): [height, width].
 
@@ -341,7 +354,7 @@ def make_tanh_warp_grid(matrix: torch.Tensor, warp_factor: float,
     """
     Args:
         matrix: bx3x3 matrix.
-        warp_factor: The warping factor. `warp_factor=1.0` represents a vannila Tanh-warping, 
+        warp_factor: The warping factor. `warp_factor=1.0` represents a vannila Tanh-warping,
            `warp_factor=0.0` represents a cropping.
         warped_shape: The target image shape to transform to.
 
@@ -365,7 +378,7 @@ def make_inverted_tanh_warp_grid(matrix: torch.Tensor, warp_factor: float,
     """
     Args:
         matrix: bx3x3 matrix.
-        warp_factor: The warping factor. `warp_factor=1.0` represents a vannila Tanh-warping, 
+        warp_factor: The warping factor. `warp_factor=1.0` represents a vannila Tanh-warping,
            `warp_factor=0.0` represents a cropping.
         warped_shape: The target image shape to transform to.
         orig_shape: The original image shape that is transformed from.
